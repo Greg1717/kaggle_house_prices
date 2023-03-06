@@ -23,13 +23,72 @@ library(data.table)
 library(caret)
 ```
 
-# Import Data
+# Version A
+
+## Import Data
 ```{r}
 data_descr <- read.csv(file = "data/data_description.txt")
 sample_submission <- read.csv(file = "data/sample_submission.csv")
 ds_test <- read.csv(file = "data/test.csv")
+ds_test <- as.data.table(ds_test)
 ds_train <- read.csv(file = "data/train.csv")
+ds_train <- as.data.table(ds_train)
 ```
+
+## Remove NAs
+```{r first_try}
+var_na <- ds_train[, colMeans(is.na(ds_train)) < .9]
+ds_train <- ds_train[, ..var_na]
+remove(var_na)
+```
+
+## Remove Near-Zero-Variance Predictors
+```{r}
+near_zero_vars <- nearZeroVar(ds_train)
+ds_train[, ..near_zero_vars]
+ds_train <- ds_train[, -c(..near_zero_vars)]
+remove(near_zero_vars)
+head(ds_train)
+```
+
+## Reduce Collinearity
+```{r}
+ds_coll <- ds_train[, -c("SalePrice")]
+numeric_vars <- ds_coll[, sapply(ds_coll, is.numeric)]
+ds_coll <- ds_coll[, ..numeric_vars]
+remove(numeric_vars)
+ds_coll[complete.cases(ds_coll)]
+correlations <- cor(ds_coll, use = "complete.obs")
+corrplot::corrplot(correlations, order = "hclust",tl.cex = 0.5)
+highCorr <- findCorrelation(correlations, cutoff = 0.75)
+remove(correlations)
+highCorr_names <- names(ds_coll[, ..highCorr])
+remove(highCorr)
+head(ds_coll[, ..highCorr_names])
+remove(ds_coll)
+# remove high corr vars
+ds_train <- ds_train[, -(..highCorr_names)]
+remove(highCorr_names)
+ds_train <- ds_train[, -c("Id")]
+ds_train[is.na(SalePrice)]
+ds_train[!complete.cases(ds_train)]
+```
+
+```{r}
+model_lm_base <- lm(SalePrice ~ ., data = ds_train)
+summary(model_lm_base)
+```
+
+
+```{r}
+model_lm_caret <- caret::train(
+        SalePrice ~ .,
+        data = ds_train,
+        preProc = c("BoxCox", "center", "scale", "pca"),
+        method = "lm"
+)
+```
+
 
 # Understand the Shape of Data
 ## Histograms
