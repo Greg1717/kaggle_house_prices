@@ -146,6 +146,15 @@ summary(model_lm_base)
 # levels(ds_train$MSZoning)
 ```
 
+# rpart
+```{r}
+model_rpart <- rpart::rpart(SalePrice ~ ., data = ds_train)
+summary(model_rpart)
+predicted_rpart <- predict(model_rpart, ds_train)
+predicted_rpart
+plot(ds_train$SalePrice, predicted_rpart)
+```
+
 
 # Understand the Shape of Data
 ## Histograms

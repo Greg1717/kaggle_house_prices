@@ -1,0 +1,265 @@
+---
+title: "Caret Pre-Processing"
+author: "Gergely Horvath"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+Goal
+
+It is your job to predict the sales price for each house. For each Id in the test set, you must predict the value of the SalePrice variable. 
+
+
+Metric
+
+Submissions are evaluated on Root-Mean-Squared-Error (RMSE) between the logarithm of the predicted value and the logarithm of the observed sales price. (Taking logs means that errors in predicting expensive houses and cheap houses will affect the result equally.)
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include = FALSE)
+library(data.table)
+library(caret)
+library(doParallel)
+```
+
+# Import Data
+```{r}
+data_descr <- read.csv(file = "data/data_description.txt")
+sample_submission <- read.csv(file = "data/sample_submission.csv")
+ds_test_orig <- read.csv(file = "data/test.csv")
+
+ds_test <- copy(ds_test_orig)
+
+ds_test <- as.data.table(ds_test)
+ds_test$SalePrice <- NA
+ds_test$status <- "test"
+ds_train <- read.csv(file = "data/train.csv")
+ds_train <- as.data.table(ds_train)
+SalePriceVector <- ds_train$SalePrice
+ds_train$status <- "train"
+ds_full <- rbind(ds_train, ds_test)
+remove(ds_train)
+remove(ds_test)
+ds_full
+```
+
+# Remove Predictors with too many NAs
+```{r id}
+var_na <- ds_full[, colMeans(is.na(ds_full)) < .9]
+ds_full[, -..var_na]
+```
+
+```{r exclude too many NAs vars}
+ds_full <- ds_full[, ..var_na]
+remove(var_na)
+ds_full
+```
+
+```{r show character vectors and number of unique values in each column}
+charidx <- unname(sapply(ds_full, function(x) is.character(x)))
+ds_full_char <- ds_full[, ..charidx]
+remove(charidx)
+apply(ds_full_char, 2, function(x) length(unique(x)))
+#count unique values for each variable
+sapply(lapply(ds_full, unique), length)
+```
+
+```{r ad_hoc}
+ds_full_char[, table(Neighborhood)]
+```
+
+# Convert to Factors
+```{r}
+# show number of incomplete cases
+nr_incomplete_cases_0 <- nrow(ds_full[!complete.cases(ds_full)])
+
+# determine index of character variables to be converted to factors
+conv <- sapply(ds_full, function(x) is.character(x) && length(unique(x)) < 50)
+
+# extract variables to be converted to factors into separate dt
+ds_factors <- ds_full[, ..conv]
+
+# replace NAs with 'None'
+ds_factors <- lapply(ds_factors, function(x) replace(x, is.na(x), "None"))
+
+# convert character vectors to factor
+ds_factors <- lapply(ds_factors, as.factor)
+
+# reformat from list to factors
+ds_factors <- as.data.table(ds_factors)
+
+# cbind factors and non-factors
+non_factor_names <- setdiff(names(ds_full), names(ds_factors))
+ds_full <- ds_full[, ..non_factor_names]
+ds_full <- cbind(ds_full, ds_factors)
+remove(ds_factors)
+
+nr_incomplete_cases_1 <- nrow(ds_full[!complete.cases(ds_full)])
+ds_full[!complete.cases(ds_full)]
+```
+
+# Cleaning NAs
+```{r}
+ds_full[is.na(LotFrontage), LotFrontage := 0]
+ds_full[is.na(GarageYrBlt), GarageYrBlt := 0]
+ds_full[is.na(MasVnrArea), MasVnrArea := 0]
+ds_full[is.na(BsmtFinSF1), BsmtFinSF1 := 0]
+ds_full[is.na(BsmtFinSF2), BsmtFinSF2 := 0]
+ds_full[is.na(BsmtUnfSF), BsmtUnfSF := 0]
+ds_full[is.na(TotalBsmtSF), TotalBsmtSF := 0]
+ds_full[is.na(BsmtFullBath), BsmtFullBath := 0]
+ds_full[is.na(BsmtHalfBath), BsmtHalfBath := 0]
+ds_full[is.na(GarageArea), GarageArea := 0]
+ds_full[is.na(GarageCars), GarageCars := 0]
+ds_full[is.na(Exterior1st), Exterior1st := "NotAppl"]
+ds_full[is.na(Exterior2nd), Exterior2nd := "NotAppl"]
+ds_full[is.na(Functional), Functional := "NotAppl"]
+ds_full[is.na(SaleType), SaleType := "NotAppl"]
+nr_incomplete_cases_2 <- nrow(ds_full[!complete.cases(ds_full[, -"SalePrice"])])
+ds_full[!complete.cases(ds_full[, -"SalePrice"])]
+```
+
+# Creating Dummy Variables
+```{r}
+dt <- predict(dummyVars(SalePrice ~ ., data = ds_full), newdata = ds_full)
+ds_full <- as.data.table(dt)
+remove(dt)
+str(ds_full)
+```
+
+## Remove Near-Zero-Variance Predictors
+Near-Zero-Variance that will be removed from dataset:
+```{r}
+near_zero_vars <- nearZeroVar(ds_full)
+ds_full[, ..near_zero_vars]
+```
+
+```{r}
+ds_full <- ds_full[, -c(..near_zero_vars)]
+remove(near_zero_vars)
+head(ds_full)
+```
+
+
+
+## Reduce Collinearity
+
+Correlation matrix:
+```{r}
+correlations <- cor(ds_full)
+corrplot::corrplot(correlations, order = "hclust",tl.cex = 0.5)
+```
+
+Identify high correlation variables:
+```{r}
+highCorr <- findCorrelation(correlations, cutoff = 0.75)
+remove(correlations)
+highCorr_names <- names(ds_full[, ..highCorr])
+remove(highCorr)
+head(ds_full[, ..highCorr_names])
+```
+
+Remove high correlation variables:
+```{r}
+ds_full <- ds_full[, -(..highCorr_names)]
+remove(highCorr_names)
+ds_full
+```
+
+# Linear Dependencies
+```{r}
+combo_info <- findLinearCombos(ds_full)
+combo_info
+remove(combo_info)
+```
+
+
+# Split full dataset into Training and Test Set
+```{r}
+ds_train <- ds_full[status.train == 1]
+ds_train[, status.train := NULL]
+ds_test <- ds_full[status.train == 0]
+ds_test[, status.train := NULL]
+```
+
+# Pre-Process
+```{r}
+set.seed(96)
+preproc_alg <- preProcess(ds_train, method = c("BoxCox", "center", "scale", "pca"))
+preproc_alg
+ds_train_prepr <- predict(preproc_alg, ds_train)
+ds_test_prepr <- predict(preproc_alg, ds_test)
+```
+
+```{r}
+# add back Sales Prices before training the model
+ds_train[, SalePrice := SalePriceVector]
+ds_train_prepr[, SalePrice := SalePriceVector]
+```
+
+
+# Train Model
+
+## Model LM Caret
+```{r}
+model_lm_caret <- caret::train(
+        SalePrice ~ .,
+        data = ds_train_prepr,
+        method = "lm"
+)
+summary(model_lm_caret)
+model_lm_caret$results
+```
+
+## Model SVM Caret
+```{r}
+model_svm_caret <- caret::train(
+        SalePrice ~ .,
+        data = ds_train_prepr,
+        method = "svmRadial"
+)
+model_svm_caret$results
+```
+
+## Model RF Caret
+```{r}
+# check CPU in terminal: sysctl -a | grep machdep.cpu
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+model_rf_caret <- caret::train(
+        SalePrice ~ .,
+        data = ds_train_prepr,
+        method = "rf"
+)
+
+stopCluster(cl)
+remove(cl)
+
+model_rf_caret$results
+```
+
+
+
+
+# Prediction
+
+```{r}
+predicted_sale_price <- predict(model_lm_caret, newdata = ds_test_prepr)
+predicted_sale_price
+
+submission <- data.frame(Id = ds_test_orig$Id,  SalePrice = predicted_sale_price)
+submission
+
+write.table(
+        submission,
+        file = "submission.csv",
+        row.names = F,
+        sep = ",",
+        quote = FALSE
+)
+```
+
+
