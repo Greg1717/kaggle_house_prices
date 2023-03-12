@@ -22,6 +22,7 @@ knitr::opts_chunk$set(include = FALSE)
 library(data.table)
 library(caret)
 library(doParallel)
+library(outliers)
 ```
 
 # Import Data
@@ -29,21 +30,75 @@ library(doParallel)
 data_descr <- read.csv(file = "data/data_description.txt")
 sample_submission <- read.csv(file = "data/sample_submission.csv")
 ds_test_orig <- read.csv(file = "data/test.csv")
-
 ds_test <- copy(ds_test_orig)
-
 ds_test <- as.data.table(ds_test)
 ds_test$SalePrice <- NA
 ds_test$status <- "test"
 ds_train <- read.csv(file = "data/train.csv")
 ds_train <- as.data.table(ds_train)
-SalePriceVector <- ds_train$SalePrice
 ds_train$status <- "train"
+```
+
+# Outliers in Sale Price per Square Feet
+Analyze SalePrice / Square Feet and remove outliers (linear model could be sensitive)
+
+```{r}
+# identify variables with area information
+sf_vars <- names(ds_train) %like% "SF|Area"
+ds_train[, ..sf_vars]
+ds_train[, total_area := round((LotArea + MasVnrArea + TotalBsmtSF + GarageArea + WoodDeckSF + OpenPorchSF + PoolArea) / 3 + GrLivArea, 2)]
+# calculate SalePrice per square feet
+ds_train[, SalePriceSF := round(SalePrice / total_area, 2)]
+
+# first histogram of Z-values before removing outliers
+SalePriceZ <- scale(ds_train$SalePriceSF)
+hist(SalePriceZ)
+```
+
+## Outlier Package
+Outlier value as per 'outlier' package:
+```{r}
+outliers_pkg <- outlier(ds_train$SalePriceSF)
+```
+
+Outlier samples:
+```{r}
+ds_train[which(ds_train$SalePriceSF %in% outliers_pkg)]
+```
+
+## Boxplot
+Outliers according to Boxplot:
+```{r}
+boxplot(ds_train$SalePriceSF,range = 3)
+outliers_boxplot <- boxplot.stats(ds_train$SalePriceSF, coef = 3)$out
+ds_train[which(ds_train$SalePriceSF %in% outliers_boxplot)]
+```
+
+## Remove Outliers
+```{r}
+ds_train <- ds_train[!SalePriceSF %in% outliers_boxplot]
+```
+
+
+
+## Histogram of Z-values after removal of outliers
+```{r}
+SalePriceZ <- scale(ds_train$SalePriceSF)
+hist(SalePriceZ)
+ds_train[, SalePriceSF := NULL]
+ds_train[, total_area := NULL]
+```
+
+***
+# Merge training and testing set
+```{r}
+SalePriceVector <- ds_train$SalePrice
 ds_full <- rbind(ds_train, ds_test)
 remove(ds_train)
 remove(ds_test)
 ds_full
 ```
+
 
 # Remove Predictors with too many NAs
 ```{r id}
@@ -62,12 +117,13 @@ charidx <- unname(sapply(ds_full, function(x) is.character(x)))
 ds_full_char <- ds_full[, ..charidx]
 remove(charidx)
 apply(ds_full_char, 2, function(x) length(unique(x)))
+remove(ds_full_char)
 #count unique values for each variable
 sapply(lapply(ds_full, unique), length)
 ```
 
 ```{r ad_hoc}
-ds_full_char[, table(Neighborhood)]
+
 ```
 
 # Convert to Factors
@@ -80,6 +136,7 @@ conv <- sapply(ds_full, function(x) is.character(x) && length(unique(x)) < 50)
 
 # extract variables to be converted to factors into separate dt
 ds_factors <- ds_full[, ..conv]
+remove(conv)
 
 # replace NAs with 'None'
 ds_factors <- lapply(ds_factors, function(x) replace(x, is.na(x), "None"))
@@ -102,6 +159,7 @@ ds_full[!complete.cases(ds_full)]
 
 # Cleaning NAs
 ```{r}
+# TODO replace NAs with zeros with lapply; idx <- sapply(df, class) == "numeric"; df[, idx] <- lapply(df[, idx], round)
 ds_full[is.na(LotFrontage), LotFrontage := 0]
 ds_full[is.na(GarageYrBlt), GarageYrBlt := 0]
 ds_full[is.na(MasVnrArea), MasVnrArea := 0]
@@ -182,6 +240,14 @@ ds_train <- ds_full[status.train == 1]
 ds_train[, status.train := NULL]
 ds_test <- ds_full[status.train == 0]
 ds_test[, status.train := NULL]
+remove(ds_full)
+```
+
+# Remove Outliers
+```{r}
+# sf_vars <- names(ds_train) %like% "SF|Area"
+# ds_train[, ..sf_vars]
+# ds_train
 ```
 
 # Pre-Process
@@ -204,6 +270,9 @@ ds_train_prepr[, SalePrice := SalePriceVector]
 
 ## Model LM Caret
 ```{r}
+
+# TODO combine predictors in a df and train with 'gam', then predict
+
 model_lm_caret <- caret::train(
         SalePrice ~ .,
         data = ds_train_prepr,
@@ -240,8 +309,6 @@ remove(cl)
 
 model_rf_caret$results
 ```
-
-
 
 
 # Prediction
