@@ -25,7 +25,9 @@ library(doParallel)
 library(outliers)
 ```
 
+
 # Import Data
+
 ```{r}
 data_descr <- read.csv(file = "data/data_description.txt")
 sample_submission <- read.csv(file = "data/sample_submission.csv")
@@ -39,14 +41,32 @@ ds_train <- as.data.table(ds_train)
 ds_train$status <- "train"
 ```
 
+
 # Outliers in Sale Price per Square Feet
+
 Analyze SalePrice / Square Feet and remove outliers (linear model could be sensitive)
 
 ```{r}
 # identify variables with area information
 sf_vars <- names(ds_train) %like% "SF|Area"
+
+# review variables containing area information
 ds_train[, ..sf_vars]
-ds_train[, total_area := round((LotArea + MasVnrArea + TotalBsmtSF + GarageArea + WoodDeckSF + OpenPorchSF + PoolArea) / 3 + GrLivArea, 2)]
+
+# calculate total area
+ds_train[, total_area := round((
+  LotArea +
+    MasVnrArea +
+    TotalBsmtSF +
+    GarageArea +
+    WoodDeckSF +
+    OpenPorchSF +
+    PoolArea
+) / 3 +
+  GrLivArea,
+2
+)]
+
 # calculate SalePrice per square feet
 ds_train[, SalePriceSF := round(SalePrice / total_area, 2)]
 
@@ -55,8 +75,11 @@ SalePriceZ <- scale(ds_train$SalePriceSF)
 hist(SalePriceZ)
 ```
 
+
 ## Outlier Package
+
 Outlier value as per 'outlier' package:
+
 ```{r}
 outliers_pkg <- outlier(ds_train$SalePriceSF)
 ```
@@ -66,11 +89,16 @@ Outlier samples:
 ds_train[which(ds_train$SalePriceSF %in% outliers_pkg)]
 ```
 
+
 ## Boxplot
+
 Outliers according to Boxplot:
+
 ```{r}
-boxplot(ds_train$SalePriceSF,range = 3)
+boxplot(ds_train$SalePriceSF, range = 3)
+
 outliers_boxplot <- boxplot.stats(ds_train$SalePriceSF, coef = 3)$out
+
 ds_train[which(ds_train$SalePriceSF %in% outliers_boxplot)]
 ```
 
@@ -89,11 +117,15 @@ ds_train[, SalePriceSF := NULL]
 ds_train[, total_area := NULL]
 ```
 
+
 ***
 # Merge training and testing set
+
 ```{r}
 SalePriceVector <- ds_train$SalePrice
+
 ds_full <- rbind(ds_train, ds_test)
+
 remove(ds_train)
 remove(ds_test)
 ds_full
@@ -102,37 +134,53 @@ ds_full
 
 # Remove Predictors with too many NAs
 ```{r id}
-var_na <- ds_full[, colMeans(is.na(ds_full)) < .9]
+# pool has many NAs, but I do not remove it because it should be useful in indicating if a property may have a high value
+ds_full$PoolQC[is.na(ds_full$PoolQC)] <- 'None'
+Qualities <- c('None' = 0, 'Po' = 1, 'Fa' = 2, 'TA' = 3, 'Gd' = 4, 'Ex' = 5)
+ds_full$PoolQC <- as.integer(plyr::revalue(ds_full$PoolQC, Qualities))
+ds_full[, table(PoolQC, useNA = "always")]
+# determine which variables should be kept, nr. of NAs low
+var_na <- ds_full[, colMeans(is.na(ds_full)) < .95]
+# show variables which will be removed
 ds_full[, -..var_na]
 ```
 
 ```{r exclude too many NAs vars}
+# remove NA vars
 ds_full <- ds_full[, ..var_na]
 remove(var_na)
 ds_full
 ```
 
+
+
+# Convert to Factors
+
 ```{r show character vectors and number of unique values in each column}
+
 charidx <- unname(sapply(ds_full, function(x) is.character(x)))
+
 ds_full_char <- ds_full[, ..charidx]
+
 remove(charidx)
+
+# show number of unique values in charater vars; which we will convert to factors in next steps
 apply(ds_full_char, 2, function(x) length(unique(x)))
+
 remove(ds_full_char)
-#count unique values for each variable
+
+#count unique values for each variable in ds_full
 sapply(lapply(ds_full, unique), length)
 ```
 
-```{r ad_hoc}
 
-```
 
-# Convert to Factors
 ```{r}
 # show number of incomplete cases
 nr_incomplete_cases_0 <- nrow(ds_full[!complete.cases(ds_full)])
 
 # determine index of character variables to be converted to factors
-conv <- sapply(ds_full, function(x) is.character(x) && length(unique(x)) < 50)
+conv <- sapply(ds_full, function(x) is.character(x) && length(unique(x)) < 30)
 
 # extract variables to be converted to factors into separate dt
 ds_factors <- ds_full[, ..conv]
@@ -159,18 +207,24 @@ ds_full[!complete.cases(ds_full)]
 
 # Cleaning NAs
 ```{r}
-# TODO replace NAs with zeros with lapply; idx <- sapply(df, class) == "numeric"; df[, idx] <- lapply(df[, idx], round)
-ds_full[is.na(LotFrontage), LotFrontage := 0]
-ds_full[is.na(GarageYrBlt), GarageYrBlt := 0]
-ds_full[is.na(MasVnrArea), MasVnrArea := 0]
-ds_full[is.na(BsmtFinSF1), BsmtFinSF1 := 0]
-ds_full[is.na(BsmtFinSF2), BsmtFinSF2 := 0]
-ds_full[is.na(BsmtUnfSF), BsmtUnfSF := 0]
-ds_full[is.na(TotalBsmtSF), TotalBsmtSF := 0]
-ds_full[is.na(BsmtFullBath), BsmtFullBath := 0]
-ds_full[is.na(BsmtHalfBath), BsmtHalfBath := 0]
-ds_full[is.na(GarageArea), GarageArea := 0]
-ds_full[is.na(GarageCars), GarageCars := 0]
+# TODO replace NAs with zeros with lapply; 
+
+ds_full <- as.data.frame(ds_full)
+ds_full[is.na(ds_full)] <- 0
+ds_full <- as.data.table(ds_full)
+
+
+# ds_full[is.na(LotFrontage), LotFrontage := 0]
+# ds_full[is.na(GarageYrBlt), GarageYrBlt := 0]
+# ds_full[is.na(MasVnrArea), MasVnrArea := 0]
+# ds_full[is.na(BsmtFinSF1), BsmtFinSF1 := 0]
+# ds_full[is.na(BsmtFinSF2), BsmtFinSF2 := 0]
+# ds_full[is.na(BsmtUnfSF), BsmtUnfSF := 0]
+# ds_full[is.na(TotalBsmtSF), TotalBsmtSF := 0]
+# ds_full[is.na(BsmtFullBath), BsmtFullBath := 0]
+# ds_full[is.na(BsmtHalfBath), BsmtHalfBath := 0]
+# ds_full[is.na(GarageArea), GarageArea := 0]
+# ds_full[is.na(GarageCars), GarageCars := 0]
 ds_full[is.na(Exterior1st), Exterior1st := "NotAppl"]
 ds_full[is.na(Exterior2nd), Exterior2nd := "NotAppl"]
 ds_full[is.na(Functional), Functional := "NotAppl"]
@@ -253,7 +307,11 @@ remove(ds_full)
 # Pre-Process
 ```{r}
 set.seed(96)
-preproc_alg <- preProcess(ds_train, method = c("BoxCox", "center", "scale", "pca"))
+preproc_alg <- preProcess(ds_train, method = c("BoxCox", 
+                                               "center", 
+                                               "scale"
+                                               # "pca"
+                                               ))
 preproc_alg
 ds_train_prepr <- predict(preproc_alg, ds_train)
 ds_test_prepr <- predict(preproc_alg, ds_test)
@@ -280,6 +338,7 @@ model_lm_caret <- caret::train(
 )
 summary(model_lm_caret)
 model_lm_caret$results
+min_rmse_lm <- min(model_lm_caret$results$RMSE)
 ```
 
 ## Model SVM Caret
@@ -290,6 +349,7 @@ model_svm_caret <- caret::train(
         method = "svmRadial"
 )
 model_svm_caret$results
+min_rmse_svm <- min(model_svm_caret$results$RMSE)
 ```
 
 ## Model RF Caret
@@ -308,7 +368,9 @@ stopCluster(cl)
 remove(cl)
 
 model_rf_caret$results
+min_rmse_rf <- min(model_rf_caret$results$RMSE)
 ```
+
 
 
 # Prediction

@@ -1,0 +1,522 @@
+---
+title: "Caret Pre-Processing"
+author: "Gergely Horvath"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+Goal
+
+It is your job to predict the sales price for each house. For each Id in the test set, you must predict the value of the SalePrice variable. 
+
+
+Metric
+
+Submissions are evaluated on Root-Mean-Squared-Error (RMSE) between the logarithm of the predicted value and the logarithm of the observed sales price. (Taking logs means that errors in predicting expensive houses and cheap houses will affect the result equally.)
+
+# Set Up Shiny Gadget
+```{r}
+library(shiny)
+library(miniUI)
+library(ggplot2)
+
+ggbrush <- function(data, xvar, yvar) {
+
+  ui <- miniPage(
+    gadgetTitleBar("Drag to select points"),
+    miniContentPanel(
+      # The brush="brush" argument means we can listen for
+      # brush events on the plot using input$brush.
+      plotOutput("plot", height = "100%", brush = "brush")
+    )
+  )
+
+  server <- function(input, output, session) {
+
+    # Render the plot
+    output$plot <- renderPlot({
+      # Plot the data with x/y vars indicated by the caller.
+      ggplot(data, aes_string(xvar, yvar)) + geom_point()
+    })
+
+    # Handle the Done button being pressed.
+    observeEvent(input$done, {
+      # Return the brushed points. See ?shiny::brushedPoints.
+      stopApp(brushedPoints(data, input$brush))
+    })
+  }
+
+  runGadget(ui, server)
+}
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include = FALSE)
+library(data.table)
+library(caret)
+library(doParallel)
+library(outliers)
+```
+
+
+# Import Data
+
+```{r}
+data_descr <- read.csv(file = "data/data_description.txt")
+sample_submission <- read.csv(file = "data/sample_submission.csv")
+ds_test_orig <- read.csv(file = "data/test.csv")
+ds_test <- copy(ds_test_orig)
+ds_test <- as.data.table(ds_test)
+ds_test$SalePrice <- NA
+ds_test$status <- "test"
+ds_train <- read.csv(file = "data/train.csv")
+ds_train <- as.data.table(ds_train)
+ds_train$status <- "train"
+ds_all <- rbind(ds_train, ds_test)
+
+
+```
+
+## Clean Up NAs in order to get rid of incomplete cases
+
+```{r}
+ds_all[!complete.cases(ds_all)]
+ds_all[, table(Fence, useNA = "always")]
+ds_all[is.na(Fence), Fence := "no_info"]
+ds_all[, table(Alley, useNA = "always")]
+ds_all[is.na(Alley), Alley := "no_info"]
+
+ds_all[, table(FireplaceQu, useNA = "always")]
+ds_all[is.na(FireplaceQu), FireplaceQu := "no_info"]
+ds_all[, table(LotFrontage, useNA = "always")]
+ds_all[is.na(LotFrontage), LotFrontage := 0]
+ds_all[, table(GarageType, useNA = "always")]
+ds_all[is.na(GarageType), GarageType := "na"]
+ds_all[, table(GarageFinish, useNA = "always")]
+ds_all[is.na(GarageFinish), GarageFinish := "na"]
+ds_all[, table(BsmtQual, useNA = "always")]
+ds_all[is.na(BsmtQual), BsmtQual := "na"]
+ds_all[is.na(BsmtExposure), BsmtExposure := "na"]
+ds_all[is.na(BsmtFinSF1), BsmtFinSF1 := 0]
+ds_all[is.na(BsmtFinSF2), BsmtFinSF2 := 0]
+ds_all[is.na(BsmtFinType1), BsmtFinType1 := "na"]
+ds_all[is.na(BsmtFinType2), BsmtFinType2 := "na"]
+ds_all[is.na(BsmtFullBath), BsmtFullBath := 0]
+ds_all[is.na(BsmtHalfBath), BsmtHalfBath := 0]
+ds_all[is.na(BsmtUnfSF), BsmtUnfSF := 0]
+
+ds_all[is.na(KitchenQual), KitchenQual := "na"]
+ds_all[is.na(BsmtCond), BsmtCond := "na"]
+ds_all[is.na(MasVnrType), MasVnrType := "na"]
+ds_all[is.na(MasVnrArea), MasVnrArea := 0]
+ds_all[is.na(MSZoning), MSZoning := "na"]
+
+ds_all[is.na(GarageArea), GarageArea := 0]
+ds_all[is.na(GarageQual), GarageQual := "na"]
+ds_all[is.na(GarageCond), GarageCond := "na"]
+
+ds_all[, table(GarageYrBlt, useNA = "always")]
+ds_all[is.na(GarageYrBlt), GarageYrBlt := 0]
+ds_all[, table(Electrical, useNA = "always")]
+ds_all[is.na(Electrical), Electrical := "none"]
+ds_all[!complete.cases(ds_all)]
+```
+
+
+
+## Rich Neighborhood Category
+
+Both the median and mean Saleprices agree on 3 neighborhoods with substantially higher saleprices. The separation of the 3 relatively poor neighborhoods is less clear, but at least both graphs agree on the same 3 poor neighborhoods. Since I do not want to 'overbin', I am only creating categories for those 'extremes'.
+
+```{r}
+ds_all$NeighRich[ds_all$Neighborhood %in% c('StoneBr', 'NridgHt', 'NoRidge')] <- 2
+ds_all$NeighRich[!ds_all$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale', 'StoneBr', 'NridgHt', 'NoRidge')] <- 1
+ds_all$NeighRich[ds_all$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale')] <- 0
+```
+
+```{r}
+table(ds_all$NeighRich)
+```
+
+
+# Clean Up Training Data
+
+
+## Remove Predictors with too many NAs
+```{r id}
+dt <- copy(ds_all[status == "train"])
+# determine which variables should be kept, nr. of NAs low
+var_na <- dt[, colMeans(is.na(dt)) < .95]
+# show variables which will be removed
+dt[, -..var_na]
+
+# remove NA vars
+dt <- dt[, ..var_na]
+remove(var_na)
+dt
+```
+
+
+
+
+## Remove Near-Zero-Variance Predictors
+
+Near-Zero-Variance that will be removed from dataset:
+
+```{r}
+near_zero_vars <- nearZeroVar(dt,freqCut = 95/5)
+dt[, ..near_zero_vars]
+```
+
+```{r}
+dt <- dt[, -c(..near_zero_vars)]
+remove(near_zero_vars)
+head(dt)
+```
+
+
+
+## Reduce Collinearity
+
+Correlation matrix:
+```{r}
+dt[!complete.cases(dt)]
+# get numeric columns
+charidx <- unname(sapply(dt, function(x) is.numeric(x)))
+dt_nr <- dt[, ..charidx]
+# exclude SalePrice as we only want to analyze the correlation of predictors
+dt_nr <- dt_nr[, -c("SalePrice")]
+# also exclude TotRmsAbvGrd as it correlates strongly with variable GrLivArea, which we want to keep
+dt_nr <- dt_nr[, -c("TotRmsAbvGrd")]
+remove(charidx)
+
+correlations <- cor(dt_nr, use = "complete.obs")
+corrplot::corrplot(correlations, order = "hclust",tl.cex = 0.5)
+```
+
+Identify high correlation variables:
+```{r}
+highCorr <- findCorrelation(correlations, cutoff = 0.75, names = T)
+head(dt[, ..highCorr])
+```
+
+Relevance of OverallQual, with which other varibles does it correlate?
+```{r}
+dt[, table(OverallQual)]
+sort(correlations[,"OverallQual"],decreasing = T)
+```
+
+
+Remove high correlation variables:
+
+```{r}
+dt <- dt[, -(..highCorr)]
+remove(highCorr)
+remove(correlations)
+# remove(dt_nr)
+dt
+```
+
+## Linear Dependencies
+```{r}
+combo_info <- findLinearCombos(dt_nr[, -c("GarageYrBlt")])
+combo_info
+remove(combo_info)
+```
+
+
+## Remove Individual Lines
+```{r}
+# remove these positions as prediction works terribly bad, there is something very unusual
+dt <- dt[!Id %in% c("524","1299")]
+# dt <- dt[!Id %in% c("524", "692", "1183", "1299")]
+```
+
+
+## Exclude Less Relevant Features (based on linear regression analysis)
+
+```{r}
+names_to_keep <- names(dt)[!names(dt) %in% c("SaleType", "TotRmsAbvGrd", "CentralAirY", "MoSold", "YrSold", "GarageFinish")]
+dt <- dt[, ..names_to_keep]
+names_to_keep <- names(dt)[!names(dt) %like% c("Exterior")]
+dt <- dt[, ..names_to_keep]
+names_to_keep <- names(dt)[!names(dt) %like% c("Electrical")]
+dt <- dt[, ..names_to_keep]
+names_to_keep <- names(dt)[!names(dt) %like% c("ExterCond")]
+dt <- dt[, ..names_to_keep]
+names_to_keep <- names(dt)[!names(dt) %like% c("HeatingQC")]
+dt <- dt[, ..names_to_keep]
+names_to_keep <- names(dt)[!names(dt) %like% c("Fence")]
+dt <- dt[, ..names_to_keep]
+names_to_keep <- names(dt)[!names(dt) %like% c("GarageType")]
+dt <- dt[, ..names_to_keep]
+names_to_keep <- names(dt)[!names(dt) %like% c("LotShape")]
+dt <- dt[, ..names_to_keep]
+names_to_keep <- names(dt)[!names(dt) %like% c("Paved")]
+dt <- dt[, ..names_to_keep]
+names_to_keep <- names(dt)[!names(dt) %like% c("RoofStyle")]
+dt <- dt[, ..names_to_keep]
+names_to_keep <- names(dt)[!names(dt) %like% c("^Foundation")]
+dt <- dt[, ..names_to_keep]
+names_to_keep <- names(dt)[!names(dt) %like% c("YearRemodAdd")]
+dt <- dt[, ..names_to_keep]
+names_to_keep <- names(dt)[!names(dt) %like% c("FireplaceQu")]
+dt <- dt[, ..names_to_keep]
+```
+
+
+
+## Create Linear Model to Assess Importance of Variables
+
+```{r}
+# prepare training scheme
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+# train the model
+model_lm <- train(SalePrice ~ ., 
+               data = dt, 
+               method = "lm", 
+               preProcess = "scale", 
+               trControl = control)
+
+summary(model_lm)
+```
+
+
+
+### LM Coef Analysis
+
+Which are the most relevant variables to determine the sales price?
+First of all create a linear model and check results in summary().
+
+```{r}
+an_model_lm <- lm(formula = SalePrice ~ ., 
+                  data = dt)
+summary(an_model_lm)
+
+library(broom)
+coefs <- tidy(an_model_lm)
+coefs <- coefs[order(coefs$p.value),]
+coefs$p.value <- with(coefs, 
+                      ifelse(abs(p.value) > .1, paste0(formatC(p.value, format = "e", digits = 2),""),
+                             ifelse(abs(p.value) > .05, paste0(formatC(p.value, format = "e", digits = 2),"."),
+                                    ifelse(abs(p.value) > .01, paste0(formatC(p.value, format = "e", digits = 2),"*"),
+                                           ifelse(abs(p.value) > .001, paste0(formatC(p.value, format = "e", digits = 2),"**"),
+                                           paste0(formatC(p.value, format = "e", digits = 2),"***"))))))
+coefs <- as.data.table(coefs)
+tail(coefs[!is.na(estimate) & 
+             !term %like% "^Neighborhood" & 
+             !term %like% "^SaleCondition"][order(term)], 55)
+coefs[term %like% "GarageFinish"]
+```
+
+
+## Rank Features By Importance
+
+```{r}
+
+# estimate variable importance
+importance <- varImp(model_lm, scale=FALSE)
+# summarize importance
+print(importance)
+# plot importance
+plot(importance, cex.axis = 0.1)
+# TODO research how to reduce font size on variable importance
+
+dt_imp <- as.data.table(importance$importance, keep.rownames = T)
+dt_imp[Overall > 2][order(Overall, decreasing = T)]
+dt_imp[Overall < 1][order(Overall, decreasing = T)]
+```
+
+
+
+
+## Neighbourhood
+
+### Binning Neighborhood
+
+```{r}
+library(scales)
+nb1 <-
+  ggplot(dt[!is.na(dt$SalePrice), ], aes(
+    x = reorder(Neighborhood, SalePrice, FUN = median),
+    y = SalePrice
+  )) +
+  geom_bar(stat = 'summary',
+           fun.y = "median",
+           fill = 'blue') + labs(x = 'Neighborhood', y = 'Median SalePrice') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(breaks = seq(0, 800000, by = 50000), labels = comma) +
+  geom_label(stat = "count",
+             aes(label = ..count.., y = ..count..),
+             size = 3) +
+  geom_hline(yintercept = 163000,
+             linetype = "dashed",
+             color = "red") #dashed line is median SalePrice
+
+
+nb2 <-
+  ggplot(dt[!is.na(dt$SalePrice), ], aes(x = reorder(Neighborhood, SalePrice, FUN =
+                                                         mean), y = SalePrice)) +
+  geom_bar(stat = 'summary',
+           fun.y = "mean",
+           fill = 'blue') + labs(x = 'Neighborhood', y = "Mean SalePrice") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(breaks = seq(0, 800000, by = 50000), labels = comma) +
+  geom_label(stat = "count",
+             aes(label = ..count.., y = ..count..),
+             size = 3) +
+  geom_hline(yintercept = 163000,
+             linetype = "dashed",
+             color = "red") #dashed line is median SalePrice
+
+gridExtra::grid.arrange(nb1, nb2)
+```
+
+
+
+
+
+# TRAIN MODELS
+
+## PLS
+
+### Train Model PLS
+
+```{r}
+# introduce a quadratic element of OverallQual as the price of high quality houses is being underestimated strongly by the prediction
+# dt$OverallQual2 <- dt$OverallQual^2
+# dt[, OverallQual := NULL]
+
+library(pls)
+mdl_pls <-
+  plsr(
+    formula = SalePrice ~ .,
+    data = dt,
+    scale = T,
+    center = T,
+    validation = "CV",
+    ncomp = 14
+  )
+
+summary(mdl_pls)
+```
+
+
+
+RMSE is 24,575.
+Variance explained by model: 35.6%.
+
+
+
+### Plot Model PLS
+
+```{r}
+plot(mdl_pls)
+```
+
+
+### Validation Plot
+
+```{r}
+#visualize cross-validation plots
+validationplot(mdl_pls)
+validationplot(mdl_pls, val.type="MSEP")
+validationplot(mdl_pls, val.type="R2")
+```
+
+
+### Prediction & ggbrush() of Training Set
+
+```{r}
+pred_pls <- predict(mdl_pls, dt[, -c("SalePrice")], ncomp = 14)
+# copy prediction into dt
+dt$predicted <- pred_pls
+# shiny
+# ggbrush(dt, "SalePrice", "predicted")
+```
+
+
+### Plot Observed vs Prediction
+
+```{r}
+plot(x = dt$SalePrice, y = pred_pls)
+abline(0,1)
+```
+
+
+### Plot Prediction vs Residuals
+
+```{r}
+plot(x = mdl_pls$fitted.values, y = mdl_pls$residuals)
+```
+
+
+### RMSE
+
+```{r}
+rmse_pls <- round(sqrt(mean((pred_pls - dt$SalePrice)^2)), 0)
+rmse_pls
+```
+
+
+### Prediction Test Set
+
+```{r}
+ds_test <- ds_all[status == "test", -c("SalePrice")]
+
+vars <- names(ds_test) %in% names(dt)
+
+ds_test <- ds_test[, ..vars]
+ds_test[!complete.cases(ds_test)]
+
+remove(vars)
+
+pred_pls_testset <- predict(mdl_pls, ds_test, ncomp = 14)
+```
+
+
+## MARS
+
+```{r}
+#count unique values for each variable
+sapply(lapply(dt, unique), length)
+```
+
+```{r}
+library(earth)
+ds_all[status == "train", -c("SalePrice")]
+mdl_mars <- earth(dt[, -c("SalePrice", "predicted")], dt$SalePrice)
+mdl_mars
+```
+
+```{r}
+summary(mdl_mars)
+```
+
+```{r}
+################################################################################
+### Section 7.2 Multivariate Adaptive Regression Splines
+
+
+set.seed(100)
+marsTune <- train(x = dt[, -c("SalePrice", "predicted")], y = dt$SalePrice,
+                  method = "earth",
+                  # tuneGrid = expand.grid(degree = 1, nprune = 2:38),
+                  trControl = trainControl(method = "cv"))
+marsTune
+
+plot(marsTune)
+
+testResults$MARS <- predict(marsTune, solTestXtrans)
+
+marsImp <- varImp(marsTune, scale = FALSE)
+plot(marsImp, top = 25)
+
+
+```
+
+
