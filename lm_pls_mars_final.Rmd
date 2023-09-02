@@ -81,7 +81,9 @@ ds_test$status <- "test"
 ds_train <- read.csv(file = "data/train.csv")
 ds_train <- as.data.table(ds_train)
 ds_train$status <- "train"
+
 ds_all <- rbind(ds_train, ds_test)
+
 remove(ds_train)
 remove(ds_test)
 ```
@@ -154,6 +156,7 @@ table(ds_all$NeighRich)
 trn <- copy(ds_all[status == "train"])
 # determine which variables should be kept, nr. of NAs low
 var_na <- trn[, colMeans(is.na(trn)) < .95]
+
 # show variables which will be removed
 trn[, -..var_na]
 
@@ -187,16 +190,20 @@ head(trn)
 Correlation matrix:
 ```{r}
 trn[!complete.cases(trn)]
+
 # get numeric columns
 charidx <- unname(sapply(trn, function(x) is.numeric(x)))
 dt_nr <- trn[, ..charidx]
+
 # exclude SalePrice as we only want to analyze the correlation of predictors
 dt_nr <- dt_nr[, -c("SalePrice")]
+
 # also exclude TotRmsAbvGrd as it correlates strongly with variable GrLivArea, which we want to keep
 dt_nr <- dt_nr[, -c("TotRmsAbvGrd")]
 remove(charidx)
 
 correlations <- cor(dt_nr, use = "complete.obs")
+
 corrplot::corrplot(correlations, order = "hclust",tl.cex = 0.5)
 ```
 
@@ -401,6 +408,7 @@ remove(nb2)
 
 ```{r}
 ds_train_dummies <- predict(dummyVars(" ~ .", data = trn), newdata = trn)
+
 ds_train_dummies <- as.data.frame(ds_train_dummies)
 
 # remove dummy because it does not exist in the test set
