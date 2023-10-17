@@ -88,6 +88,41 @@ remove(ds_test)
 str(ds_all)
 ```
 
+
+
+
+
+# Clean Up Training Data
+
+## Remove Predictors with too many NAs
+```{r show NA vars to be removed}
+trn <- copy(ds_all[status == "train"])
+# determine which variables should be kept, i.e. number of NAs low
+var_na <- trn[, colMeans(is.na(trn)) < .95]
+trn[, -..var_na]
+```
+
+```{r remove NA vars}
+trn <- trn[, ..var_na]
+remove(var_na)
+head(trn)
+```
+
+
+
+## Remove Near-Zero-Variance Predictors
+
+```{r print near zero variance predictors}
+near_zero_vars <- nearZeroVar(trn,freqCut = 95/5)
+trn[, ..near_zero_vars]
+```
+
+```{r remove near zero variance predictors}
+trn <- trn[, -c(..near_zero_vars)]
+remove(near_zero_vars)
+head(trn)
+```
+
 ## Clean Up NAs in order to get rid of incomplete cases
 
 ```{r}
@@ -104,76 +139,23 @@ str(ds_all)
 # as.data.table(lapply(keep(ds_all, is.numeric), function(x) replace(x, is.na(x), 0)))
 
 # replace NA with zero in numeric columns
-numeric_names <- names(Filter(function(x) is.numeric(x), ds_all))
-ds_all[, (numeric_names) := lapply(.SD, function(x) replace(x, is.na(x), 0)), 
+numeric_names <- names(Filter(function(x) is.numeric(x), trn))
+trn[, (numeric_names) := lapply(.SD, function(x) replace(x, is.na(x), 0)),
        .SDcols = numeric_names]
 remove(numeric_names)
 
 # replace NA with 'na' in character columns
-character_names <- names(Filter(function(x) is.character(x), ds_all))
-ds_all[, (character_names) := lapply(.SD, function(x) replace(x, is.na(x), "na")), 
+character_names <- names(Filter(function(x) is.character(x), trn))
+trn[, (character_names) := lapply(.SD, function(x) replace(x, is.na(x), "na")),
        .SDcols = character_names]
 remove(character_names)
 ```
-
-
-
-## Rich Neighborhood Category
-
-Both the median and mean Saleprices agree on 3 neighborhoods with substantially higher saleprices. The separation of the 3 relatively poor neighborhoods is less clear, but at least both graphs agree on the same 3 poor neighborhoods. Since I do not want to 'overbin', I am only creating categories for those 'extremes'.
-
-```{r}
-ds_all$NeighRich[ds_all$Neighborhood %in% c('StoneBr', 'NridgHt', 'NoRidge')] <- 3
-ds_all$NeighRich[!ds_all$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale', 'StoneBr', 'NridgHt', 'NoRidge')] <- 2
-ds_all$NeighRich[ds_all$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale')] <- 1
-
-table(ds_all$NeighRich)
-```
-
-
-# Clean Up Training Data
-
-
-## Remove Predictors with too many NAs
-```{r id}
-trn <- copy(ds_all[status == "train"])
-# determine which variables should be kept, nr. of NAs low
-var_na <- trn[, colMeans(is.na(trn)) < .95]
-
-# show variables which will be removed
-trn[, -..var_na]
-
-# remove NA vars
-trn <- trn[, ..var_na]
-remove(var_na)
-trn
-```
-
-
-
-
-## Remove Near-Zero-Variance Predictors
-
-Near-Zero-Variance that will be removed from dataset:
-```{r}
-near_zero_vars <- nearZeroVar(trn,freqCut = 95/5)
-trn[, ..near_zero_vars]
-```
-
-```{r}
-trn <- trn[, -c(..near_zero_vars)]
-remove(near_zero_vars)
-head(trn)
-```
-
 
 
 ## Reduce Collinearity
 
 Correlation matrix:
 ```{r}
-trn[!complete.cases(trn)]
-
 # get numeric columns
 charidx <- unname(sapply(trn, function(x) is.numeric(x)))
 dt_nr <- trn[, ..charidx]
@@ -209,185 +191,28 @@ Remove high correlation variables:
 trn <- trn[, -(..highCorr)]
 remove(highCorr)
 remove(correlations)
-# remove(dt_nr)
 trn
 ```
 
 ## Linear Dependencies
 ```{r}
-combo_info <- findLinearCombos(dt_nr[, -c("GarageYrBlt")])
+combo_info <- findLinearCombos(dt_nr)
 remove(dt_nr)
 combo_info
 remove(combo_info)
 ```
 
 
-## Remove Individual Lines
-```{r}
-# remove these positions as prediction works terribly bad, there is something very unusual
-trn <- trn[!Id %in% c("524","1299")]
-# trn <- trn[!Id %in% c("524", "692", "1183", "1299")]
-```
 
-
-## Exclude Less Relevant Features (based on linear regression analysis)
+## Feature Selection
 
 ```{r}
-names_to_keep <- names(trn)[!names(trn) %in% c("SaleType", "TotRmsAbvGrd", "CentralAirY", "MoSold", "YrSold", "GarageFinish")]
-trn <- trn[, ..names_to_keep]
-names_to_keep <- names(trn)[!names(trn) %like% c("Exterior")]
-trn <- trn[, ..names_to_keep]
-names_to_keep <- names(trn)[!names(trn) %like% c("Electrical")]
-trn <- trn[, ..names_to_keep]
-names_to_keep <- names(trn)[!names(trn) %like% c("ExterCond")]
-trn <- trn[, ..names_to_keep]
-names_to_keep <- names(trn)[!names(trn) %like% c("HeatingQC")]
-trn <- trn[, ..names_to_keep]
-names_to_keep <- names(trn)[!names(trn) %like% c("Fence")]
-trn <- trn[, ..names_to_keep]
-names_to_keep <- names(trn)[!names(trn) %like% c("GarageType")]
-trn <- trn[, ..names_to_keep]
-names_to_keep <- names(trn)[!names(trn) %like% c("LotShape")]
-trn <- trn[, ..names_to_keep]
-names_to_keep <- names(trn)[!names(trn) %like% c("Paved")]
-trn <- trn[, ..names_to_keep]
-names_to_keep <- names(trn)[!names(trn) %like% c("RoofStyle")]
-trn <- trn[, ..names_to_keep]
-names_to_keep <- names(trn)[!names(trn) %like% c("^Foundation")]
-trn <- trn[, ..names_to_keep]
-names_to_keep <- names(trn)[!names(trn) %like% c("YearRemodAdd")]
-trn <- trn[, ..names_to_keep]
-names_to_keep <- names(trn)[!names(trn) %like% c("FireplaceQu")]
-trn <- trn[, ..names_to_keep]
+trn
 ```
 
 
 
-## Create Linear Model to Assess Importance of Variables
-
-```{r}
-# prepare training scheme
-control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
-
-# train the model
-model_lm <- train(SalePrice ~ ., 
-               data = trn, 
-               method = "lm", 
-               preProcess = "scale", 
-               trControl = control)
-remove(control)
-summary(model_lm)
-```
-
-
-
-### LM Coef Analysis (readable)
-
-Which are the most relevant variables to determine the sales price?
-First of all create a linear model and check results in summary().
-
-```{r}
-an_model_lm <- lm(formula = SalePrice ~ ., 
-                  data = trn)
-summary(an_model_lm)
-
-coefs <- tidy(an_model_lm)
-remove(an_model_lm)
-coefs <- coefs[order(coefs$p.value),]
-coefs$p.value <- with(coefs, 
-                      ifelse(abs(p.value) > .1, paste0(formatC(p.value, format = "e", digits = 2),""),
-                             ifelse(abs(p.value) > .05, paste0(formatC(p.value, format = "e", digits = 2),"."),
-                                    ifelse(abs(p.value) > .01, paste0(formatC(p.value, format = "e", digits = 2),"*"),
-                                           ifelse(abs(p.value) > .001, paste0(formatC(p.value, format = "e", digits = 2),"**"),
-                                           paste0(formatC(p.value, format = "e", digits = 2),"***"))))))
-coefs <- as.data.table(coefs)
-coefs
-```
-
-Review less relevant coefficients/variables:
-```{r}
-tail(coefs[!is.na(estimate) & 
-             !term %like% "^Neighborhood" & 
-             !term %like% "^SaleCondition"][order(term)], 55)
-coefs[term %like% "GarageFinish"]
-remove(coefs)
-```
-
-## Rank Features By Importance
-
-```{r}
-
-# estimate variable importance
-importance <- varImp(model_lm, scale = FALSE)
-remove(model_lm)
-# summarize importance
-print(importance)
-# plot importance
-plot(importance, cex.axis = 0.1)
-
-# TODO research how to reduce font size on variable importance
-
-dt_imp <- as.data.table(importance$importance, keep.rownames = T)
-remove(importance)
-head(dt_imp)
-```
-
-```{r}
-
-dt_imp[Overall > 2][order(Overall, decreasing = T)]
-```
-
-```{r}
-dt_imp[Overall < 1][order(Overall, decreasing = T)]
-remove(dt_imp)
-```
-
-
-## Neighbourhood
-
-### Binning Neighborhood
-
-```{r}
-nb1 <-
-  ggplot(trn[!is.na(trn$SalePrice), ], aes(
-    x = reorder(Neighborhood, SalePrice, FUN = median),
-    y = SalePrice
-  )) +
-  geom_bar(stat = 'summary',
-           fun.y = "median",
-           fill = 'blue') + labs(x = 'Neighborhood', y = 'Median SalePrice') +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  scale_y_continuous(breaks = seq(0, 800000, by = 50000), labels = comma) +
-  geom_label(stat = "count",
-             aes(label = ..count.., y = ..count..),
-             size = 3) +
-  geom_hline(yintercept = 163000,
-             linetype = "dashed",
-             color = "red") #dashed line is median SalePrice
-
-
-nb2 <-
-  ggplot(trn[!is.na(trn$SalePrice), ], aes(x = reorder(Neighborhood, SalePrice, FUN =
-                                                         mean), y = SalePrice)) +
-  geom_bar(stat = 'summary',
-           fun.y = "mean",
-           fill = 'blue') + labs(x = 'Neighborhood', y = "Mean SalePrice") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  scale_y_continuous(breaks = seq(0, 800000, by = 50000), labels = comma) +
-  geom_label(stat = "count",
-             aes(label = ..count.., y = ..count..),
-             size = 3) +
-  geom_hline(yintercept = 163000,
-             linetype = "dashed",
-             color = "red") #dashed line is median SalePrice
-
-gridExtra::grid.arrange(nb1, nb2)
-remove(nb1)
-remove(nb2)
-```
-
-
-# Dummy Variables
+## Create Dummy Variables
 
 ```{r}
 ds_train_dummies <- predict(dummyVars(" ~ .", data = trn), newdata = trn)
@@ -416,7 +241,7 @@ ds_train_dummies
 
 model_pls <-
   plsr(
-    formula = SalePrice ~ . + poly(NeighRich, 2),
+    formula = SalePrice ~ .,
     # data = trn,
     data = ds_train_dummies,
     scale = T,
@@ -511,6 +336,11 @@ Predict:
 
 ```{r}
 pred_test_pls <- predict(model_pls, ds_test_dummies, ncomp = 14)
+ds_train_dummies$Alleyna
+ds_test_dummies$Alleyna
+
+# TODO what to do about missing dummy variable in test set?
+
 head(pred_test_pls)
 ```
 
