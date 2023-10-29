@@ -7,14 +7,19 @@ editor_options:
   chunk_output_type: console
 ---
 
-Goal
+# Goal
 
 It is your job to predict the sales price for each house. For each Id in the test set, you must predict the value of the SalePrice variable. 
 
-
-Metric
+## Metric
 
 Submissions are evaluated on Root-Mean-Squared-Error (RMSE) between the logarithm of the predicted_pls value and the logarithm of the observed sales price. (Taking logs means that errors in predicting expensive houses and cheap houses will affect the result equally.)
+
+# Settings 
+```{r}
+plot_tf <- FALSE
+run_SAFS <- FALSE
+```
 
 # Load Libraries
 ```{r}
@@ -31,46 +36,11 @@ library(broom)
 library(scales)
 ```
 
-# Set Up Shiny Gadget
-```{r}
-ggbrush <- function(data, xvar, yvar) {
-
-  ui <- miniPage(
-    gadgetTitleBar("Drag to select points"),
-    miniContentPanel(
-      # The brush="brush" argument means we can listen for
-      # brush events on the plot using input$brush.
-      plotOutput("plot", height = "100%", brush = "brush")
-    )
-  )
-
-  server <- function(input, output, session) {
-
-    # Render the plot
-    output$plot <- renderPlot({
-      # Plot the data with x/y vars indicated by the caller.
-      ggplot(data, aes_string(xvar, yvar)) + geom_point()
-    })
-
-    # Handle the Done button being pressed.
-    observeEvent(input$done, {
-      # Return the brushed points. See ?shiny::brushedPoints.
-      stopApp(brushedPoints(data, input$brush))
-    })
-  }
-
-  runGadget(ui, server)
-}
-```
-
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(include = FALSE)
 ```
 
-
 # Import Data
-
 Load data and rbind test set and training set.
 ```{r}
 data_descr <- read.csv(file = "data/data_description.txt")
@@ -83,49 +53,59 @@ ds_train <- read.csv(file = "data/train.csv")
 ds_train <- as.data.table(ds_train)
 ds_train$status <- "train"
 ds_all <- rbind(ds_train, ds_test)
+
+ds_all[, table(MSZoning)]
+ds_all[MSZoning == "C (all)", MSZoning := "all"]
+
 remove(ds_train)
 remove(ds_test)
 str(ds_all)
 ```
 
+## Convert All Character Vectors to Factors
+```{r}
+# char_cols <- sapply(ds_all, is.character)
+# lapply(ds_all[, ..char_cols], unique)
+# sapply(lapply(ds_all[, ..char_cols], unique), length)
+# 
+# # ds_all[, (char_cols) := lapply(.SD, factor()),
+# #        .SDcols = char_cols]
+# 
+# # Convert all character columns to factors
+# ds_all <- as.data.frame(ds_all)
+# ds_all[char_cols] <- lapply(ds_all[char_cols], factor)
+# str(ds_all)
+```
 
-
-
-
-# Clean Up Training Data
-
+# Preprocess
 ## Remove Predictors with too many NAs
+The following variables will be removed from both training and test sets:
 ```{r show NA vars to be removed}
-trn <- copy(ds_all[status == "train"])
 # determine which variables should be kept, i.e. number of NAs low
-var_na <- trn[, colMeans(is.na(trn)) < .95]
-trn[, -..var_na]
+var_na <- ds_all[, colMeans(is.na(ds_all)) < .98]
+ds_all[, -..var_na]
 ```
 
 ```{r remove NA vars}
-trn <- trn[, ..var_na]
+ds_all <- ds_all[, ..var_na]
 remove(var_na)
-head(trn)
+head(ds_all)
 ```
 
-
-
-## Remove Near-Zero-Variance Predictors
-
-```{r print near zero variance predictors}
-near_zero_vars <- nearZeroVar(trn,freqCut = 95/5)
-trn[, ..near_zero_vars]
-```
-
-```{r remove near zero variance predictors}
-trn <- trn[, -c(..near_zero_vars)]
-remove(near_zero_vars)
-head(trn)
-```
-
-## Clean Up NAs in order to get rid of incomplete cases
-
+## Normalization
 ```{r}
+# preprocess and define subsets
+normalization <- preProcess(ds_all[, -c("Id", "SalePrice", "status")])
+norm <- predict(normalization, ds_all[, -c("Id", "SalePrice", "status")])
+remove(normalization)
+norm$status <- ds_all$status
+norm$Id <- ds_all$Id
+head(norm)
+```
+
+## Convert NAs in order to get rid of incomplete cases
+```{r}
+# tidyverse method using across() =============================================
 # library(purrr)
 # library(dplyr)
 # library(tidyr)
@@ -135,391 +115,307 @@ head(trn)
 #   ) %>%
 #   as.data.table()
 
+# data.table with keep ========================================================
 # does almost the same, but returns only is.numeric columns
 # as.data.table(lapply(keep(ds_all, is.numeric), function(x) replace(x, is.na(x), 0)))
 
+# data.table with Filter and lapply ===========================================
 # replace NA with zero in numeric columns
-numeric_names <- names(Filter(function(x) is.numeric(x), trn))
-trn[, (numeric_names) := lapply(.SD, function(x) replace(x, is.na(x), 0)),
+numeric_names <- names(Filter(function(x) is.numeric(x), norm))
+norm[, (numeric_names) := lapply(.SD, function(x) replace(x, is.na(x), 0)),
        .SDcols = numeric_names]
 remove(numeric_names)
-
 # replace NA with 'na' in character columns
-character_names <- names(Filter(function(x) is.character(x), trn))
-trn[, (character_names) := lapply(.SD, function(x) replace(x, is.na(x), "na")),
+character_names <- names(Filter(function(x) is.character(x), norm))
+norm[, (character_names) := lapply(.SD, function(x) replace(x, is.na(x), "na")),
        .SDcols = character_names]
 remove(character_names)
+tail(norm)
+head(norm)
 ```
 
+## Create Dummy Variables
+```{r}
+# trn <- ds_all[status == "train", -"status"]
+#count unique values for each variable; there should be no variables with only 1 value because it would cause an error in the next step (and also it wouldn't make sense to have such a variable)
+# sapply(lapply(trn, unique), length)
+
+# =============================================================================
+# _____DEV______ ==============================================================
+# update this chung, first dummification, then search for correlated variables, so that all variables are included in the search for correlated VARs.
+# =============================================================================
+  
+# dummification
+dummification_transf <- dummyVars(" ~ .", data = norm[, -c("status", "Id")])
+dt <- predict(dummification_transf, newdata = norm)
+remove(dummification_transf)
+remove(norm)
+dt <- as.data.table(dt)
+str(dt, list.len = ncol(dt))
+dt$status <- ds_all$status
+dt$Id <- ds_all$Id
+head(dt)
+```
+
+## Remove Near-Zero-Variance Predictors
+Following variables have near-zero variance:
+```{r print near zero variance predictors}
+near_zero_vars <- nearZeroVar(dt[status == "train", -c("status")],freqCut = 99/1)
+dt[status == "train", ..near_zero_vars]
+```
+
+Dataset after removal of near-zero-variance variables
+```{r remove near zero variance predictors}
+dt <- dt[, -c(..near_zero_vars)]
+remove(near_zero_vars)
+head(dt)
+```
 
 ## Reduce Collinearity
 
 Correlation matrix:
 ```{r}
-# get numeric columns
-charidx <- unname(sapply(trn, function(x) is.numeric(x)))
-dt_nr <- trn[, ..charidx]
 
-# exclude SalePrice as we only want to analyze the correlation of predictors
-dt_nr <- dt_nr[, -c("SalePrice")]
-
-# also exclude TotRmsAbvGrd as it correlates strongly with variable GrLivArea, which we want to keep
-dt_nr <- dt_nr[, -c("TotRmsAbvGrd")]
-remove(charidx)
-
-correlations <- cor(dt_nr, use = "complete.obs")
-
-corrplot::corrplot(correlations, order = "hclust",tl.cex = 0.5)
+idx <- unname(sapply(dt[status == "train", -c("status", "Id")], function(x) is.numeric(x)))
+dt_nr <- dt[status == "train", ..idx]
+remove(idx)
+# check for incomplete cases; there should be none as we have replaced NAs
+dt_nr[!complete.cases(dt_nr)]
+correlations <- cor(dt_nr, use = "everything")
+if ("plot_tf" == TRUE) {
+  corrplot::corrplot(correlations, order = "hclust", tl.cex = 0.5)
+}
 ```
 
 Identify high correlation variables:
 ```{r}
 highCorr <- findCorrelation(correlations, cutoff = 0.75, names = T)
-head(trn[, ..highCorr])
+head(dt_nr[, ..highCorr])
 ```
 
+Remove high correlation variables and plot again:
+```{r}
+correlations <- cor(dt_nr[, -..highCorr], use = "everything")
+remove(dt_nr)
+if ("plot_tf" == TRUE) {
+  corrplot::corrplot(correlations, order = "hclust", tl.cex = 0.8)
+}
+```
+
+
+Just an example on sorting correlations
 Relevance of OverallQual, with which other varibles does it correlate?
 ```{r}
-trn[, table(OverallQual)]
 sort(correlations[,"OverallQual"],decreasing = T)
 ```
 
 
-Remove high correlation variables:
-
+Remove high correlation variables from training and test sets:
 ```{r}
-trn <- trn[, -(..highCorr)]
+dt <- dt[, -(..highCorr)]
 remove(highCorr)
 remove(correlations)
-trn
+head(dt)
 ```
 
 ## Linear Dependencies
 ```{r}
-combo_info <- findLinearCombos(dt_nr)
-remove(dt_nr)
-combo_info
+str(dt, list.len = ncol(dt))
+combo_info <- findLinearCombos(dt[, -c("status", "Id")])
+combo_info$linearCombos
+vars_remove <- combo_info$remove
+# to be removed:
+dt[, ..vars_remove]
+dt <- dt[, -..vars_remove]
+remove(vars_remove)
 remove(combo_info)
+str(dt, list.len = ncol(dt))
+dt[1]
 ```
 
-
-
-## Feature Selection
-
 ```{r}
-trn
+predictors <- dt[status == "train", -c("status", "Id")]
+outcome <- ds_all[status == "train"]$SalePrice
 ```
 
-
-
-## Create Dummy Variables
-
+# Feature Selection
 ```{r}
-ds_train_dummies <- predict(dummyVars(" ~ .", data = trn), newdata = trn)
-
-ds_train_dummies <- as.data.frame(ds_train_dummies)
-
-# remove dummy because it does not exist in the test set
-ds_train_dummies$HouseStyle2.5Fin <- NULL
-ds_train_dummies$GarageQualEx <- NULL
-ds_train_dummies$Id <- NULL
-ds_train_dummies
+# subsets <- c(1:10, 15, 30, 50)
+# set.seed(10)
+# ctrl <- rfeControl(functions = lmFuncs,
+#                    method = "repeatedcv",
+#                    repeats = 5,
+#                    verbose = TRUE)
+# 
+# y <- ds_all[status == "train"]$SalePrice
+# x <- dt[status == "train", -c("status", "Id")]
+# x <- as.data.frame(x)
+# names(x) <- gsub(pattern = "\\.", replacement = "_", x = names(x))
+# names(x)
+# # contrasts can be applied only to factors with 2 or more levels
+# lmProfile <- rfe(x, 
+#                  y,
+#                  sizes = subsets,
+#                  rfeControl = ctrl)
+# 
+# lmProfile
 ```
 
-
-
-# TRAIN MODELS
-
-## PLS
-
-### Train Model PLS
-
+## Simulated annealing feature selection
 ```{r}
-# introduce a quadratic element of OverallQual as the price of high quality houses is being underestimated strongly by the prediction
-# trn$OverallQual2 <- trn$OverallQual^2
-# trn[, OverallQual := NULL]
-
-model_pls <-
-  plsr(
-    formula = SalePrice ~ .,
-    # data = trn,
-    data = ds_train_dummies,
-    scale = T,
-    center = T,
-    validation = "CV",
-    ncomp = 14
+if (run_SAFS == TRUE) {
+  ctrl <- safsControl(functions = caretSA)
+  safs_obj <- safs(
+    predictors,
+    outcome,
+    iters = 100,
+    safsControl = ctrl,
+    method = "lm"
   )
-
-summary(model_pls)
+  remove(ctrl)
+  safs_obj
+  safs_vars <- safs_obj$optVariables
+}
 ```
-
-
-RMSE is 24,679 (see line 'CV')
-Variance explained by model (see line 'X'): 33.57%?
-
-
-
-### Plot Model PLS
 
 ```{r}
-plot(model_pls)
+if (run_SAFS == TRUE) {
+  plot(obj) + theme_bw()
+}
 ```
-
-
-### Validation Plot
 
 ```{r}
-validationplot(model_pls)
+names(getModelInfo())
 ```
 
-MSEP plot:
+
+# Train Models
+## LM
 ```{r}
-validationplot(model_pls, val.type="MSEP")
+# TODO Apply stratified random sampling!
+ctrl <- trainControl(method = "cv", 
+                     number = 10) 
+
+lmFit1 <- train(x = predictors, 
+                y = outcome,
+                method = "lm", 
+                trControl = ctrl)
+rmse_lm <- lmFit1$results$RMSE
+rsquared_lm <- lmFit1$results$Rsquared
 ```
-
-
-R2 plot:
-```{r}
-validationplot(model_pls, val.type="R2")
-```
-
-
-### Prediction & ggbrush() of Training Set
-
-```{r}
-pred_train_pls <- predict(model_pls, ds_train_dummies, ncomp = 14)
-# shiny
-# ggbrush(ds_train_dummies, "SalePrice", "pred_train_pls")
-```
-
-
-### Plot Observed vs Prediction
 
 ```{r}
-plot(x = ds_train_dummies$SalePrice, y = pred_train_pls)
-abline(0,1)
+if (run_SAFS == TRUE) {
+  ctrl <- trainControl(method = "cv",
+                       number = 10)
+  lmFit1_safs <- train(
+    x = predictors[, ..safs_vars],
+    y = outcome,
+    method = "lm",
+    trControl = ctrl
+  )
+  rmse_lm_safs <- lmFit1_safs$results$RMSE
+  rsquared_lm_safs <- lmFit1_safs$results$Rsquared
+}
 ```
-
-
-### Plot Prediction vs Residuals
-
-```{r}
-plot(x = model_pls$fitted.values, y = model_pls$residuals)
-```
-
-
-### RMSE
-
-```{r}
-rmse_pls <- round(sqrt(mean((pred_train_pls - trn$SalePrice)^2)), 0)
-rmse_pls
-```
-
-
-### Prediction Test Set
-
-Convert test data to dummies:
-
-```{r}
-ds_test <- ds_all[status == "test", -c("SalePrice")]
-vars <- names(ds_test) %in% names(trn)
-ds_test <- ds_test[, ..vars]
-ds_test[!complete.cases(ds_test)]
-remove(vars)
-ds_test_dummies <- predict(dummyVars(" ~ .", data = ds_test), newdata = ds_test)
-ds_test_dummies <- as.data.frame(ds_test_dummies)
-ds_test_dummies
-```
-
-
-Predict:
-
-```{r}
-pred_test_pls <- predict(model_pls, ds_test_dummies, ncomp = 14)
-ds_train_dummies$Alleyna
-ds_test_dummies$Alleyna
-
-# TODO what to do about missing dummy variable in test set?
-
-head(pred_test_pls)
-```
-
 
 ## MARS
-
 ```{r}
-#count unique values for each variable
-sapply(lapply(trn, unique), length)
-```
-
-### Train Model MARS (earth)
-```{r}
-ds_train_dummies <- as.data.table(ds_train_dummies)
-str(ds_train_dummies)
-model_mars_earth <- earth(ds_train_dummies[, -c("SalePrice")], ds_train_dummies$SalePrice)
-# predict train
-pred_train_mars_earth <- predict(model_mars_earth, ds_train_dummies[, -c("SalePrice")])
-pred_train_mars_earth <- as.vector(pred_train_mars_earth)
-model_mars_earth
-```
-
-### Summary MARS (earth)
-```{r}
-summary(model_mars_earth)
-```
-
-### Plot MARS (earth)
-```{r}
-plot(model_mars_earth)
-```
-
-### Plot Observed vs Prediction MARS (earth)
-```{r}
-?base::plot
-plot(x = I(ds_train_dummies$SalePrice), y = ds_train_dummies$predicted_mars)
-abline(0,1)
-```
-
-
-### Plot Prediction vs Residuals
-
-```{r}
-plot(x = model_mars_earth$fitted.values, y = model_mars_earth$residuals)
-```
-
-
-### RMSE
-
-```{r}
-rmse_mars_earth <- round(sqrt(mean((pred_train_mars_earth - ds_train_dummies$SalePrice)^2)), 0)
-rmse_mars_earth
-```
-
-### Predict test set
-```{r}
-pred_test_mars_earth <- predict(model_mars_earth, ds_test_dummies)
-pred_test_mars_earth <- as.vector(pred_test_mars_earth)
-```
-
-
-
-## MARS - CARET
-
-### Train Model
-
-```{r}
-indx <- createFolds(ds_train_dummies$SalePrice, returnTrain = TRUE)
+indx <- createFolds(outcome, returnTrain = TRUE)
 ctrl <- trainControl(method = "cv", index = indx)
 model_mars_caret <-
   train(
-    x = ds_train_dummies[, -c("SalePrice")],
-    y = ds_train_dummies$SalePrice,
+    x = predictors,
+    y = outcome,
     method = "earth",
-    preProcess = c("BoxCox", "center", "scale"),
-    # tuneGrid = expand.grid(degree = 1, nprune = 2:38),
     trControl = ctrl
   )
-
-pred_train_mars_caret <- as.vector(predict(model_mars_caret, ds_train_dummies[, -c("SalePrice", "predicted_pls")]))
-
-model_mars_caret
+remove(indx)
+remove(ctrl)
+rmse_mars <- min(model_mars_caret$results$RMSE)
+rsquared_mars <- max(model_mars_caret$results$Rsquared)
+varImp(model_mars_caret)
 ```
 
+## RF
 ```{r}
-summary(model_mars_caret)
-```
-
-```{r}
-plot(model_mars_caret)
-```
-
-### Plot Observed vs Prediction
-```{r}
-plot(x = ds_train_dummies$SalePrice, y = pred_train_mars_caret)
-abline(0,1)
-```
-
-
-### Plot Prediction vs Residuals
-
-```{r}
-plot(
-  x = pred_train_mars_caret,
-  y = (
-    pred_train_mars_caret - ds_train_dummies$SalePrice
+model_rf <-
+  train(
+    x = predictors,
+    y = outcome,
+    method = "rf"
   )
-)
+rmse_rf <- min(model_rf$results$RMSE)
+rsquared_rf <- max(model_rf$results$Rsquared)
+varImp(model_rf)
 ```
 
-
-### RMSE
+## PLS
+```{r}
+model_pls <-
+  train(
+    x = predictors,
+    y = outcome,
+    method = "pls"
+  )
+model_pls
+rmse_pls <- min(model_pls$results$RMSE)
+rsquared_pls <- max(model_pls$results$Rsquared)
+varImp(model_pls)
+```
 
 ```{r}
-rmse_mars_caret <- round(sqrt(mean((pred_train_mars_caret - ds_train_dummies$SalePrice)^2)), 0)
-rmse_mars_caret
+if (run_SAFS == TRUE) {
+  model_pls_safs <-
+    train(x = predictors[, ..safs_vars],
+          y = outcome,
+          method = "pls")
+  model_pls_safs
+  rmse_pls_safs <- min(model_pls_safs$results$RMSE)
+  rsquared_pls_safs <- max(model_pls_safs$results$Rsquared)
+}
 ```
 
-### Predict test set
+MARS and RF provide the best results.
+MARS and RF also have the benefit that they conduct intrinsic feature selection!
+Feature selection with SAFS did not show any benefit in this case; at this moment I do not see how it can be useful. It seems much more efficient to get the list of most relevant predictors from varImp() of the RF and MARS models.
+
+# varImp() MARS and RF
 ```{r}
-pred_test_mars_caret <- predict(model_mars_caret, ds_test_dummies)
-pred_test_mars_caret <- as.vector(pred_test_mars_caret)
+var_imp_mars <- varImp(model_mars_caret)$importance
+var_imp_mars$feature <- rownames(var_imp_mars)
+var_imp_mars <- as.data.table(var_imp_mars)
+var_imp_mars
+
+var_imp_rf <- varImp(model_rf)$importance
+var_imp_rf$feature <- rownames(var_imp_rf)
+var_imp_rf <- as.data.table(var_imp_rf)
+var_imp_rf <- var_imp_rf[order(Overall, decreasing = TRUE)]
+var_imp_rf[Overall > 1]
+var_imp_rf[Overall > 1 & feature %in% var_imp_mars$feature]
+
 ```
 
-
-```{r}
-marsImp <- varImp(model_mars_caret)
-plot(marsImp)
-```
+# Current Issues
 
 
-## SVM - CARET
-```{r}
-model_svm_caret <- caret::train(
-        SalePrice ~ .,
-        data = ds_train_dummies,
-        preProcess = c("BoxCox", "center", "scale"),
-        method = "svmRadial"
-)
-model_svm_caret$results
-rmse_svm <- min(model_svm_caret$results$RMSE)
-```
+## NAs:
+When I remove NAs, i.e. replace them by 'na' or by zero, do I have to perform this for both the test set and training set?
+- tree-based techniques can specifically account for missing data.
 
 
-## RF - CARET
+### Solution
 
-```{r}
-# check CPU in terminal: sysctl -a | grep machdep.cpu
-cl <- makePSOCKcluster(5)
-registerDoParallel(cl)
-
-model_rf_caret <- caret::train(
-        SalePrice ~ .,
-        data = ds_train_dummies,
-        preProcess = c("BoxCox", "center", "scale"),
-        method = "rf"
-)
-
-stopCluster(cl)
-remove(cl)
-
-model_rf_caret$results
-rmse_rf <- min(model_rf_caret$results$RMSE)
-```
+- tree-based techniques can specifically account for missing data.
+- correlations cannot be calculated on NA lines, but with zeros it can!
+- removal is needed on both, it makes sense to replace NA numerics with zero in this current dataset. 
 
 
-# Submission
+## Dummy variables: 
 
-```{r}
-submission <- data.frame(Id = ds_test$Id,  SalePrice = pred_test_mars_caret)
-submission
+- shall I create it in one step for both training and test set? 
+- are dummy variables required for all ML models, or just some of them?
 
-write.table(
-        submission,
-        file = "submission.csv",
-        row.names = F,
-        sep = ",",
-        quote = FALSE
-)
-```
+Caret package assumes that all values are numeric, i.e. dummification is required for all models!
 
 
