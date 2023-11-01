@@ -339,15 +339,39 @@ varImp(model_mars_caret)
 
 ## RF
 ```{r}
+# initiate parallel processing
+# check CPU in terminal: sysctl -a | grep machdep.cpu
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+# train model
 model_rf <-
   train(
     x = predictors,
     y = outcome,
     method = "rf"
   )
+
+stopCluster(cl)
+remove(cl)
+
 rmse_rf <- min(model_rf$results$RMSE)
 rsquared_rf <- max(model_rf$results$Rsquared)
 varImp(model_rf)
+```
+
+## Gradient Boosting
+```{r}
+model_gb <-
+  train(
+    x = predictors,
+    y = outcome,
+    method = "gbm"
+  )
+rmse_gb <- min(model_gb$results$RMSE)
+rsquared_gb <- max(model_gb$results$Rsquared)
+
+# varImp does not work on this model for some reason
 ```
 
 ## PLS
