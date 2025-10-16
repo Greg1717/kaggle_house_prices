@@ -110,8 +110,10 @@ ds_all[, (numeric_names) := lapply(.SD, function(x) replace(x, is.na(x), 0)),
 remove(numeric_names)
 
 # replace NA with 'na' in character columns
-character_names <- names(Filter(function(x) is.character(x), ds_all))
-ds_all[, (character_names) := lapply(.SD, function(x) replace(x, is.na(x), "na")), 
+character_names <- names(Filter(function(x) is.character(x), 
+                                ds_all))
+ds_all[, (character_names) := 
+         lapply(.SD, function(x) replace(x, is.na(x), "na")), 
        .SDcols = character_names]
 remove(character_names)
 ```
@@ -316,7 +318,6 @@ remove(coefs)
 ## Rank Features By Importance
 
 ```{r}
-
 # estimate variable importance
 importance <- varImp(model_lm, scale = FALSE)
 remove(model_lm)
@@ -682,6 +683,7 @@ rmse_rf <- min(model_rf_caret$results$RMSE)
 ```{r}
 submission <- data.frame(Id = ds_test$Id,  SalePrice = pred_test_mars_caret)
 submission
+
 
 write.table(
         submission,
